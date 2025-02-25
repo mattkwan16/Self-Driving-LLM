@@ -12,6 +12,9 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
     current_time = sample['timestamp'] / 1e6  # Convert to seconds
     
     # Get current ego pose
+    # Use LIDAR_TOP as a good default data source
+    # Options: CAM_FRONT_RIGHT, LIDAR_TOP, RADAR_BACK_LEFT, RADAR_BACK_RIGHT, RADAR_FRONT, RADAR_FRONT_LEFT, 
+    # RADAR_FRONT_RIGHT, CAM_BACK, CAM_BACK_LEFT, CAM_BACK_RIGHT, CAM_FRONT, CAM_FRONT_LEFT
     ego_pose_data = nusc.get('ego_pose', nusc.get('sample_data', sample['data']['LIDAR_TOP'])['ego_pose_token'])
     ego_translation = np.array(ego_pose_data['translation'])  # (x, y, z)
     ego_rotation = Quaternion(ego_pose_data['rotation'])
