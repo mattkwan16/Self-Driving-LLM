@@ -47,12 +47,11 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
                 future_samples.append((future_time, future_sample))
                 break
     
-    results = {}
     future_ego_positions = {}
+    future_objects = {}
     for future_time, future_sample in future_samples:
         ego_pose_data = nusc.get('ego_pose', nusc.get('sample_data', future_sample['data']['LIDAR_TOP'])['ego_pose_token'])
         future_translation = np.array(ego_pose_data['translation'])  # (x, y, z)
-        future_rotation = Quaternion(ego_pose_data['rotation'])
         
         # Compute relative ego position
         relative_future_translation = ego_rotation.inverse.rotate(future_translation - ego_translation)
@@ -67,19 +66,20 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
             relative_position = ego_rotation.inverse.rotate(obj_translation - future_translation)
             objects.append({'category': ann['category_name'], 'position': relative_position.tolist()})
         
-        results[future_time] = objects
+        future_objects[future_time] = objects
     
-    return velocity, heading, current_objects, future_ego_positions, results
+    return velocity, heading, current_objects, future_ego_positions, future_objects
 
-def save_to_unsloth_format(velocity, heading, current_data, future_ego, future_data, filename="unsloth_data.json"):
-    """Save the results in Unsloth's Alpaca format."""
-    formatted_data = {
-        "Instruction": "Given the current speed, heading, and object positions, predict the future ego and object positions relative to the current ego position.",
-        "Input": {"speed": velocity, "heading": heading, "current_objects": current_data},
-        "Output": {"future_ego_positions": future_ego, "future_objects": future_data}
+def save_to_unsloth_format(velocity, heading, current_data, future_ego, future_objects, filename="unsloth_data.json"):
+    """Save the results in Unsloth's Alpaca format and match the dataset format."""
+    entry = {
+        "instruction": "Given the current speed, heading, and object positions, predict the future ego and object positions relative to the current ego position.",
+        "input": {"speed": velocity, "heading": heading, "current_objects": current_data},
+        "output": {"future_ego_positions": future_ego, "future_objects": future_objects}
     }
+    
     with open(filename, "w") as f:
-        json.dump(formatted_data, f, indent=4)
+        json.dump([entry], f, indent=4)
 
 # Example usage
 sample_token = nusc.sample[0]['token']  # First sample
