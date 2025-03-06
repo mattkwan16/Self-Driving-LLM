@@ -6,7 +6,8 @@ import os
 from tqdm import tqdm  # Import tqdm for progress bar
 
 # Load dataset
-nusc = NuScenes(version='v1.0-mini', dataroot='/data/sets/nuscenes', verbose=True)
+#nusc = NuScenes(version='v1.0-mini', dataroot='/data/sets/nuscenes', verbose=True)
+#nusc = NuScenes(version='v1.0-trainval', dataroot='/data/sets/nuscenes', verbose=True)
 
 def get_local_positions(sample_token, future_times=[1, 3, 5]):
     """Retrieve ego and object positions relative to the ego vehicle at future timestamps."""
@@ -99,7 +100,7 @@ def save_to_unsloth_format(velocity, heading, current_data, future_ego, future_o
 
 # Iterate over samples with a progress bar
 for sample in tqdm(nusc.sample, desc="Processing samples", unit="sample"):
-    sample_token = sample['token'] 
+    sample_token = sample['token']
     velocity, heading, current_positions, future_ego_positions, future_positions = get_local_positions(sample_token)
     save_to_unsloth_format(velocity, heading, current_positions, future_ego_positions, future_positions)
     if False:
