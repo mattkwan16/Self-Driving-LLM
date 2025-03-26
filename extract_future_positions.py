@@ -4,13 +4,10 @@ import numpy as np
 import json
 import os
 from tqdm import tqdm
-from joblib import Parallel, delayed
+import multiprocessing
 
 # Load dataset
-nusc = NuScenes(version='v1.0-trainval', dataroot='/data/sets/nuscenes', verbose=True)
-
-# Precompute timestamp-to-sample mapping for fast lookup
-timestamp_to_sample = {s['timestamp']: s for s in nusc.sample}
+#nusc = NuScenes(version='v1.0-trainval', dataroot='/data/sets/nuscenes', verbose=True)
 
 def get_local_positions(sample_token, future_times=[1, 3, 5]):
     """Retrieve ego and object positions relative to the ego vehicle at future timestamps."""
@@ -35,15 +32,15 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
         current_objects.append({'category': ann['category_name'], 'position': relative_position.tolist()})
 
     future_ego_positions, future_objects = {}, {}
+    future_sample = sample
     for future_time in future_times:
         future_time_target = current_time + future_time
-        future_sample = min(
-            (s for t, s in timestamp_to_sample.items() if t >= future_time_target * 1e6),
-            key=lambda s: s['timestamp'],
-            default=None
-        )
-        if not future_sample:
-            continue
+
+        # Move forward in time until we find the closest future sample
+        while future_sample['next']:
+            future_sample = nusc.get('sample', future_sample['next'])
+            if future_sample['timestamp'] / 1e6 >= future_time_target:
+                break
 
         # Get future ego pose
         ego_pose_data = nusc.get('ego_pose', nusc.get('sample_data', future_sample['data']['LIDAR_TOP'])['ego_pose_token'])
@@ -59,28 +56,30 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
             relative_position = ego_rotation.inverse.rotate(obj_translation - future_translation)
             future_objects[future_time].append({'category': ann['category_name'], 'position': relative_position.tolist()})
 
-    return velocity, heading, current_objects, future_ego_positions, future_objects
-
-def process_sample(sample):
-    """Processes a single sample and writes it to file."""
-    sample_token = sample['token']
-    velocity, heading, current_positions, future_ego_positions, future_positions = get_local_positions(sample_token)
-
-    entry = {
+    return {
         "instruction": "Given the current speed, heading, and object positions, predict the future ego and object positions relative to the current ego position.",
-        "input": {"speed": velocity, "heading": heading, "current_objects": current_positions},
-        "output": {"future_ego_positions": future_ego_positions, "future_objects": future_positions}
+        "input": {"speed": velocity, "heading": heading, "current_objects": current_objects},
+        "output": {"future_ego_positions": future_ego_positions, "future_objects": future_objects}
     }
 
-    # Stream-write the result to avoid memory issues
-    with open("unsloth_data.jsonl", "a") as f:
-        f.write(json.dumps(entry) + "\n")
+def process_and_save(sample_token):
+    """Processes a single sample and writes it directly to file in JSONL format."""
+    result = get_local_positions(sample_token)
 
-# Process dataset in parallel, writing incrementally
+    # Write each sample separately to avoid memory issues
+    with open("unsloth_data.json", "a") as f:
+        f.write(json.dumps(result) + "\n")
+
 if __name__ == "__main__":
-    num_workers = min(8, os.cpu_count())  # Use up to 8 cores
-    Parallel(n_jobs=num_workers)(
-        delayed(process_sample)(sample) for sample in tqdm(nusc.sample, desc="Processing samples", unit="sample")
-    )
+    # Number of parallel processes (limit to 4-6 to avoid memory overload)
+    num_workers = min(6, os.cpu_count() // 2)
 
-print("Processing complete! Data saved in 'unsloth_data.jsonl'.")
+    # Open file in write mode to clear old data
+    with open("unsloth_data.json", "w") as f:
+        pass  # Just to clear old content
+
+    # Use multiprocessing to parallelize but with controlled memory usage
+    with multiprocessing.Pool(num_workers) as pool:
+        list(tqdm(pool.imap(process_and_save, [s['token'] for s in nusc.sample]), total=len(nusc.sample), desc="Processing samples"))
+
+    print("Processing complete! Data saved in 'unsloth_data.json'.")
