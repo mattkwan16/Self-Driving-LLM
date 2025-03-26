@@ -7,7 +7,7 @@ from tqdm import tqdm
 import multiprocessing
 
 # Load dataset
-#nusc = NuScenes(version='v1.0-trainval', dataroot='/data/sets/nuscenes', verbose=True)
+# nusc = NuScenes(version='v1.0-trainval', dataroot='/data/sets/nuscenes', verbose=True)
 
 def round_floats(data, decimals=3):
     """Recursively round all floats in a data structure to a given number of decimal places."""
@@ -85,24 +85,27 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
         }
     }
 
-def process_and_save(sample_token):
-    """Processes a single sample and writes it directly to file in JSONL format."""
-    result = get_local_positions(sample_token)
+def process_sample(sample_token):
+    """Processes a single sample and returns the result."""
+    return get_local_positions(sample_token)
 
-    # Write each sample separately to avoid memory issues
-    with open("unsloth_data.json", "a") as f:
-        f.write(json.dumps(result) + "\n")
+def process_and_save(sample_tokens):
+    """Processes samples in parallel and writes output to file."""
+    #num_workers = min(6, os.cpu_count() // 2)
+    num_workers = 16
+    
+    with multiprocessing.Pool(num_workers) as pool:
+        results = list(tqdm(pool.imap(process_sample, sample_tokens), total=len(sample_tokens), desc="Processing Samples"))
+
+    # Save results as a valid JSON array
+    with open("unsloth_data.json", "w") as f:
+        json.dump(results, f, indent=2)
 
 if __name__ == "__main__":
-    # Number of parallel processes (limit to 4-6 to avoid memory overload)
-    num_workers = min(6, os.cpu_count() // 2)
+    # Get the list of sample tokens (assuming `nusc` is initialized)
+    sample_tokens = [s['token'] for s in nusc.sample]
 
-    # Open file in write mode to clear old data
-    with open("unsloth_data.json", "w") as f:
-        pass  # Just to clear old content
-
-    # Use multiprocessing to parallelize but with controlled memory usage
-    with multiprocessing.Pool(num_workers) as pool:
-        list(tqdm(pool.imap(process_and_save, [s['token'] for s in nusc.sample]), total=len(nusc.sample), desc="Processing samples"))
+    # Run the processing
+    process_and_save(sample_tokens)
 
     print("Processing complete! Data saved in 'unsloth_data.json'.")
