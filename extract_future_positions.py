@@ -3,11 +3,14 @@ from nuscenes.utils.data_classes import Quaternion
 import numpy as np
 import json
 import os
-from tqdm import tqdm  # Import tqdm for progress bar
+from tqdm import tqdm
+from joblib import Parallel, delayed
 
 # Load dataset
-#nusc = NuScenes(version='v1.0-mini', dataroot='/data/sets/nuscenes', verbose=True)
-#nusc = NuScenes(version='v1.0-trainval', dataroot='/data/sets/nuscenes', verbose=True)
+nusc = NuScenes(version='v1.0-trainval', dataroot='/data/sets/nuscenes', verbose=True)
+
+# Precompute timestamp-to-sample mapping for fast lookup
+timestamp_to_sample = {s['timestamp']: s for s in nusc.sample}
 
 def get_local_positions(sample_token, future_times=[1, 3, 5]):
     """Retrieve ego and object positions relative to the ego vehicle at future timestamps."""
@@ -16,12 +19,11 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
 
     # Get current ego pose
     ego_pose_data = nusc.get('ego_pose', nusc.get('sample_data', sample['data']['LIDAR_TOP'])['ego_pose_token'])
-    ego_translation = np.array(ego_pose_data['translation'])  # (x, y, z)
+    ego_translation = np.array(ego_pose_data['translation'])
     ego_rotation = Quaternion(ego_pose_data['rotation'])
 
-    # Get current speed (approximate from velocity vector)
-    velocity_data = nusc.get('ego_pose', nusc.get('sample_data', sample['data']['LIDAR_TOP'])['ego_pose_token'])
-    velocity = np.linalg.norm(np.array(velocity_data['translation']) - ego_translation)  # Speed estimation
+    # Get current speed and heading
+    velocity = np.linalg.norm(ego_translation)  # Approximate speed
     heading = ego_rotation.yaw_pitch_roll[0]  # Extract yaw as heading
 
     # Get current object positions
@@ -29,83 +31,56 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
     for ann_token in sample['anns']:
         ann = nusc.get('sample_annotation', ann_token)
         obj_translation = np.array(ann['translation'])
-
-        # Convert object position to ego's local frame
         relative_position = ego_rotation.inverse.rotate(obj_translation - ego_translation)
         current_objects.append({'category': ann['category_name'], 'position': relative_position.tolist()})
 
-    future_samples = []
+    future_ego_positions, future_objects = {}, {}
     for future_time in future_times:
-        future_sample = sample
         future_time_target = current_time + future_time
+        future_sample = min(
+            (s for t, s in timestamp_to_sample.items() if t >= future_time_target * 1e6),
+            key=lambda s: s['timestamp'],
+            default=None
+        )
+        if not future_sample:
+            continue
 
-        while future_sample['next']:
-            future_sample = nusc.get('sample', future_sample['next'])
-            future_sample_time = future_sample['timestamp'] / 1e6
-
-            if future_sample_time >= future_time_target:
-                future_samples.append((future_time, future_sample))
-                break
-
-    future_ego_positions = {}
-    future_objects = {}
-    for future_time, future_sample in future_samples:
+        # Get future ego pose
         ego_pose_data = nusc.get('ego_pose', nusc.get('sample_data', future_sample['data']['LIDAR_TOP'])['ego_pose_token'])
-        future_translation = np.array(ego_pose_data['translation'])  # (x, y, z)
-
-        # Compute relative ego position
+        future_translation = np.array(ego_pose_data['translation'])
         relative_future_translation = ego_rotation.inverse.rotate(future_translation - ego_translation)
         future_ego_positions[future_time] = relative_future_translation.tolist()
 
-        objects = []
+        # Get future object positions
+        future_objects[future_time] = []
         for ann_token in future_sample['anns']:
             ann = nusc.get('sample_annotation', ann_token)
             obj_translation = np.array(ann['translation'])
-
-            # Convert object position to ego's local frame
             relative_position = ego_rotation.inverse.rotate(obj_translation - future_translation)
-            objects.append({'category': ann['category_name'], 'position': relative_position.tolist()})
-
-        future_objects[future_time] = objects
+            future_objects[future_time].append({'category': ann['category_name'], 'position': relative_position.tolist()})
 
     return velocity, heading, current_objects, future_ego_positions, future_objects
 
-def save_to_unsloth_format(velocity, heading, current_data, future_ego, future_objects, filename="unsloth_data.json"):
-    """Save the results in Unsloth's Alpaca format and match the dataset format."""
+def process_sample(sample):
+    """Processes a single sample and writes it to file."""
+    sample_token = sample['token']
+    velocity, heading, current_positions, future_ego_positions, future_positions = get_local_positions(sample_token)
 
     entry = {
         "instruction": "Given the current speed, heading, and object positions, predict the future ego and object positions relative to the current ego position.",
-        "input": {"speed": velocity, "heading": heading, "current_objects": current_data},
-        "output": {"future_ego_positions": future_ego, "future_objects": future_objects}
+        "input": {"speed": velocity, "heading": heading, "current_objects": current_positions},
+        "output": {"future_ego_positions": future_ego_positions, "future_objects": future_positions}
     }
 
-    # Check if the file exists and load existing data
-    if os.path.exists(filename):
-        with open(filename, "r") as f:
-            try:
-                data = json.load(f)
-                if not isinstance(data, list):  # Ensure it's a list
-                    data = []
-            except json.JSONDecodeError:
-                data = []
-    else:
-        data = []
+    # Stream-write the result to avoid memory issues
+    with open("unsloth_data.jsonl", "a") as f:
+        f.write(json.dumps(entry) + "\n")
 
-    # Append the new entry
-    data.append(entry)
+# Process dataset in parallel, writing incrementally
+if __name__ == "__main__":
+    num_workers = min(8, os.cpu_count())  # Use up to 8 cores
+    Parallel(n_jobs=num_workers)(
+        delayed(process_sample)(sample) for sample in tqdm(nusc.sample, desc="Processing samples", unit="sample")
+    )
 
-    # Write back to the file
-    with open(filename, "w") as f:
-        json.dump(data, f, indent=4)
-
-# Iterate over samples with a progress bar
-for sample in tqdm(nusc.sample, desc="Processing samples", unit="sample"):
-    sample_token = sample['token']
-    velocity, heading, current_positions, future_ego_positions, future_positions = get_local_positions(sample_token)
-    save_to_unsloth_format(velocity, heading, current_positions, future_ego_positions, future_positions)
-    if False:
-        for time, objects in future_positions.items():
-            print(f"In {time} seconds:")
-            print(f"  Ego vehicle relative position: {future_ego_positions[time]}")
-            for obj in objects:
-                print(f"  {obj['category']} at {obj['position']}")
+print("Processing complete! Data saved in 'unsloth_data.jsonl'.")
