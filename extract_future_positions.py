@@ -9,6 +9,16 @@ import multiprocessing
 # Load dataset
 #nusc = NuScenes(version='v1.0-trainval', dataroot='/data/sets/nuscenes', verbose=True)
 
+def round_floats(data, decimals=3):
+    """Recursively round all floats in a data structure to a given number of decimal places."""
+    if isinstance(data, float):
+        return round(data, decimals)
+    elif isinstance(data, list):
+        return [round_floats(item, decimals) for item in data]
+    elif isinstance(data, dict):
+        return {key: round_floats(value, decimals) for key, value in data.items()}
+    return data
+
 def get_local_positions(sample_token, future_times=[1, 3, 5]):
     """Retrieve ego and object positions relative to the ego vehicle at future timestamps."""
     sample = nusc.get('sample', sample_token)
@@ -29,7 +39,10 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
         ann = nusc.get('sample_annotation', ann_token)
         obj_translation = np.array(ann['translation'])
         relative_position = ego_rotation.inverse.rotate(obj_translation - ego_translation)
-        current_objects.append({'category': ann['category_name'], 'position': relative_position.tolist()})
+        current_objects.append({
+            'category': ann['category_name'], 
+            'position': round_floats(relative_position.tolist())
+        })
 
     future_ego_positions, future_objects = {}, {}
     future_sample = sample
@@ -46,7 +59,7 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
         ego_pose_data = nusc.get('ego_pose', nusc.get('sample_data', future_sample['data']['LIDAR_TOP'])['ego_pose_token'])
         future_translation = np.array(ego_pose_data['translation'])
         relative_future_translation = ego_rotation.inverse.rotate(future_translation - ego_translation)
-        future_ego_positions[future_time] = relative_future_translation.tolist()
+        future_ego_positions[future_time] = round_floats(relative_future_translation.tolist())
 
         # Get future object positions
         future_objects[future_time] = []
@@ -54,12 +67,22 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
             ann = nusc.get('sample_annotation', ann_token)
             obj_translation = np.array(ann['translation'])
             relative_position = ego_rotation.inverse.rotate(obj_translation - future_translation)
-            future_objects[future_time].append({'category': ann['category_name'], 'position': relative_position.tolist()})
+            future_objects[future_time].append({
+                'category': ann['category_name'], 
+                'position': round_floats(relative_position.tolist())
+            })
 
     return {
         "instruction": "Given the current speed, heading, and object positions, predict the future ego and object positions relative to the current ego position.",
-        "input": {"speed": velocity, "heading": heading, "current_objects": current_objects},
-        "output": {"future_ego_positions": future_ego_positions, "future_objects": future_objects}
+        "input": {
+            "speed": round_floats(velocity),
+            "heading": round_floats(heading),
+            "current_objects": current_objects
+        },
+        "output": {
+            "future_ego_positions": future_ego_positions,
+            "future_objects": future_objects
+        }
     }
 
 def process_and_save(sample_token):
