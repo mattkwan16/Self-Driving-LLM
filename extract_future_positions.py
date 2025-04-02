@@ -19,6 +19,13 @@ def round_floats(data, decimals=3):
         return {key: round_floats(value, decimals) for key, value in data.items()}
     return data
 
+def cartesian_to_polar(relative_position):
+    """Convert (x, y) position to (angle, distance) relative to ego vehicle."""
+    x, y = relative_position[:2]  # Ignore z for angle calculations
+    distance = np.linalg.norm([x, y])  # Compute Euclidean distance
+    angle = np.degrees(np.arctan2(y, x))  # Compute angle in degrees
+    return [round(angle, 3), round(distance, 3)]
+
 def get_local_positions(sample_token, future_times=[1, 3, 5]):
     """Retrieve ego and object positions relative to the ego vehicle at future timestamps."""
     sample = nusc.get('sample', sample_token)
@@ -31,7 +38,7 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
 
     # Get current speed and heading
     velocity = np.linalg.norm(ego_translation)  # Approximate speed
-    heading = ego_rotation.yaw_pitch_roll[0]  # Extract yaw as heading
+    heading = np.degrees(ego_rotation.yaw_pitch_roll[0])  # Extract yaw as heading in degrees
 
     # Get current object positions
     current_objects = []
@@ -41,7 +48,7 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
         relative_position = ego_rotation.inverse.rotate(obj_translation - ego_translation)
         current_objects.append({
             'category': ann['category_name'], 
-            'position': round_floats(relative_position.tolist())
+            'position': cartesian_to_polar(relative_position)
         })
 
     future_ego_positions, future_objects = {}, {}
@@ -59,7 +66,7 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
         ego_pose_data = nusc.get('ego_pose', nusc.get('sample_data', future_sample['data']['LIDAR_TOP'])['ego_pose_token'])
         future_translation = np.array(ego_pose_data['translation'])
         relative_future_translation = ego_rotation.inverse.rotate(future_translation - ego_translation)
-        future_ego_positions[future_time] = round_floats(relative_future_translation.tolist())
+        future_ego_positions[future_time] = cartesian_to_polar(relative_future_translation)
 
         # Get future object positions
         future_objects[future_time] = []
@@ -69,7 +76,7 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
             relative_position = ego_rotation.inverse.rotate(obj_translation - future_translation)
             future_objects[future_time].append({
                 'category': ann['category_name'], 
-                'position': round_floats(relative_position.tolist())
+                'position': cartesian_to_polar(relative_position)
             })
 
     return {
