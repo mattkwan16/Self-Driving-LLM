@@ -9,6 +9,9 @@ import multiprocessing
 # Load dataset
 # nusc = NuScenes(version='v1.0-trainval', dataroot='/data/sets/nuscenes', verbose=True)
 
+MAX_DISTANCE = 30
+FUTURE_TIMES = [1, 3, 5]
+
 def round_floats(data, decimals=3):
     """Recursively round all floats in a data structure to a given number of decimal places."""
     if isinstance(data, float):
@@ -26,8 +29,11 @@ def cartesian_to_polar(relative_position):
     angle = np.degrees(np.arctan2(y, x))  # Compute angle in degrees
     return [round(angle, 3), round(distance, 3)]
 
-def get_local_positions(sample_token, future_times=[1, 3, 5]):
+def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None):
     """Retrieve ego and object positions relative to the ego vehicle at future timestamps."""
+    count_omits = 0
+    omitted_distances = []
+    omitted_per_output = 0
     sample = nusc.get('sample', sample_token)
     current_time = sample['timestamp'] / 1e6  # Convert to seconds
 
@@ -46,10 +52,17 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
         ann = nusc.get('sample_annotation', ann_token)
         obj_translation = np.array(ann['translation'])
         relative_position = ego_rotation.inverse.rotate(obj_translation - ego_translation)
-        current_objects.append({
-            'category': ann['category_name'], 
-            'position': cartesian_to_polar(relative_position)
-        })
+        polar_position = cartesian_to_polar(relative_position)
+        
+        if polar_position[1] <= max_distance:
+            current_objects.append({
+                'category': ann['category_name'], 
+                'position': polar_position
+            })
+        else:
+            count_omits += 1
+            omitted_distances.append(polar_position[1])
+            omitted_per_output += 1
 
     future_ego_positions, future_objects = {}, {}
     future_sample = sample
@@ -74,35 +87,60 @@ def get_local_positions(sample_token, future_times=[1, 3, 5]):
             ann = nusc.get('sample_annotation', ann_token)
             obj_translation = np.array(ann['translation'])
             relative_position = ego_rotation.inverse.rotate(obj_translation - future_translation)
-            future_objects[future_time].append({
-                'category': ann['category_name'], 
-                'position': cartesian_to_polar(relative_position)
-            })
-
+            polar_position = cartesian_to_polar(relative_position)
+            
+            if max_distance is None or polar_position[1] <= max_distance:
+                future_objects[future_time].append({
+                    'category': ann['category_name'], 
+                    'position': polar_position
+                })
+            else:
+                count_omits += 1
+                omitted_distances.append(polar_position[1])
+                omitted_per_output += 1
+    
     return {
-        "instruction": "Given the current speed, heading, and object positions, predict the future ego and object positions relative to the current ego position.",
-        "input": {
-            "speed": round_floats(velocity),
-            "heading": round_floats(heading),
-            "current_objects": current_objects
-        },
-        "output": {
-            "future_ego_positions": future_ego_positions,
-            "future_objects": future_objects
-        }
+        "current_objects": current_objects,
+        "future_ego_positions": future_ego_positions,
+        "future_objects": future_objects,
+        "omitted_distances": omitted_distances,
+        "omitted_per_output": omitted_per_output
     }
 
 def process_sample(sample_token):
     """Processes a single sample and returns the result."""
-    return get_local_positions(sample_token)
+    return get_local_positions(sample_token, max_distance=MAX_DISTANCE, future_times=FUTURE_TIMES)
 
 def process_and_save(sample_tokens):
     """Processes samples in parallel and writes output to file."""
-    #num_workers = min(6, os.cpu_count() // 2)
     num_workers = 16
     
+    results = []
+    omitted_distances_total = []
+    omitted_per_output_total = 0
+    count_omits_total = 0
+
     with multiprocessing.Pool(num_workers) as pool:
-        results = list(tqdm(pool.imap(process_sample, sample_tokens), total=len(sample_tokens), desc="Processing Samples"))
+        for result in tqdm(pool.imap(process_sample, sample_tokens), total=len(sample_tokens), desc="Processing Samples"):
+            results.append(result)
+            omitted_distances_total.extend(result['omitted_distances'])
+            omitted_per_output_total += result['omitted_per_output']
+            count_omits_total += len(result['omitted_distances'])
+
+    # Total samples processed
+    total_samples = len(sample_tokens)
+
+    # Compute final statistics
+    avg_omitted_distance = round(np.mean(omitted_distances_total), 3) if omitted_distances_total else 0
+    avg_omitted_per_output = round(omitted_per_output_total / total_samples, 3) if total_samples else 0
+    omitted_percentage = round((count_omits_total / (total_samples * len(FUTURE_TIMES))) * 100, 2) if total_samples else 0
+
+    print(f"Total samples processed: {total_samples}")
+    print(f"Total omitted objects: {count_omits_total}")
+    print(f"Average omitted distance: {avg_omitted_distance}m")
+    print(f"Max distance: {MAX_DISTANCE}m")
+    print(f"Average omitted per output: {avg_omitted_per_output} objects")
+    print(f"Omitted objects percentage: {omitted_percentage}%")
 
     # Save results as a valid JSON array
     with open("unsloth_data.json", "w") as f:
