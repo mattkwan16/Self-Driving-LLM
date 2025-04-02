@@ -9,7 +9,7 @@ import multiprocessing
 # Load dataset
 # nusc = NuScenes(version='v1.0-trainval', dataroot='/data/sets/nuscenes', verbose=True)
 
-MAX_DISTANCE = 30
+MAX_DISTANCE = 50
 FUTURE_TIMES = [1, 3, 5]
 
 def round_floats(data, decimals=3):
@@ -34,6 +34,7 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
     count_omits = 0
     omitted_distances = []
     omitted_per_output = 0
+    number_of_objects = 0
     sample = nusc.get('sample', sample_token)
     current_time = sample['timestamp'] / 1e6  # Convert to seconds
 
@@ -48,13 +49,14 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
 
     # Get current object positions
     current_objects = []
+    number_of_objects += len(sample['anns'])
     for ann_token in sample['anns']:
         ann = nusc.get('sample_annotation', ann_token)
         obj_translation = np.array(ann['translation'])
         relative_position = ego_rotation.inverse.rotate(obj_translation - ego_translation)
         polar_position = cartesian_to_polar(relative_position)
         
-        if polar_position[1] <= max_distance:
+        if max_distance is None or polar_position[1] <= max_distance:
             current_objects.append({
                 'category': ann['category_name'], 
                 'position': polar_position
@@ -83,6 +85,7 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
 
         # Get future object positions
         future_objects[future_time] = []
+        number_of_objects += len(future_sample['anns'])
         for ann_token in future_sample['anns']:
             ann = nusc.get('sample_annotation', ann_token)
             obj_translation = np.array(ann['translation'])
@@ -104,7 +107,8 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
         "future_ego_positions": future_ego_positions,
         "future_objects": future_objects,
         "omitted_distances": omitted_distances,
-        "omitted_per_output": omitted_per_output
+        "omitted_per_output": omitted_per_output,
+        "number_of_objects": number_of_objects
     }
 
 def process_sample(sample_token):
@@ -119,6 +123,7 @@ def process_and_save(sample_tokens):
     omitted_distances_total = []
     omitted_per_output_total = 0
     count_omits_total = 0
+    total_objects_processed = 0  # Track total objects processed
 
     with multiprocessing.Pool(num_workers) as pool:
         for result in tqdm(pool.imap(process_sample, sample_tokens), total=len(sample_tokens), desc="Processing Samples"):
@@ -126,6 +131,7 @@ def process_and_save(sample_tokens):
             omitted_distances_total.extend(result['omitted_distances'])
             omitted_per_output_total += result['omitted_per_output']
             count_omits_total += len(result['omitted_distances'])
+            total_objects_processed += result['number_of_objects']  # Add current objects processed
 
     # Total samples processed
     total_samples = len(sample_tokens)
@@ -133,9 +139,10 @@ def process_and_save(sample_tokens):
     # Compute final statistics
     avg_omitted_distance = round(np.mean(omitted_distances_total), 3) if omitted_distances_total else 0
     avg_omitted_per_output = round(omitted_per_output_total / total_samples, 3) if total_samples else 0
-    omitted_percentage = round((count_omits_total / (total_samples * len(FUTURE_TIMES))) * 100, 2) if total_samples else 0
+    omitted_percentage = round((count_omits_total / total_objects_processed) * 100, 2) if total_samples else 0
 
     print(f"Total samples processed: {total_samples}")
+    print(f"Total objects processed: {total_objects_processed}")  # Output total objects processed
     print(f"Total omitted objects: {count_omits_total}")
     print(f"Average omitted distance: {avg_omitted_distance}m")
     print(f"Max distance: {MAX_DISTANCE}m")
