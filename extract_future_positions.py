@@ -103,6 +103,18 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
                 omitted_per_output += 1
     
     return {
+        "output_json": {
+            "instruction": "Given the current speed, heading, and object positions, predict the future ego and object positions relative to the current ego position.",
+            "input": {
+                "speed": round_floats(velocity),
+                "heading": round_floats(heading),
+                "current_objects": current_objects
+            },
+            "output": {
+                "future_ego_positions": future_ego_positions,
+                "future_objects": future_objects
+            }
+        },
         "current_objects": current_objects,
         "future_ego_positions": future_ego_positions,
         "future_objects": future_objects,
@@ -127,7 +139,7 @@ def process_and_save(sample_tokens):
 
     with multiprocessing.Pool(num_workers) as pool:
         for result in tqdm(pool.imap(process_sample, sample_tokens), total=len(sample_tokens), desc="Processing Samples"):
-            results.append(result)
+            results.append(result['output_json'])
             omitted_distances_total.extend(result['omitted_distances'])
             omitted_per_output_total += result['omitted_per_output']
             count_omits_total += len(result['omitted_distances'])
