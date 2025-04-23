@@ -116,14 +116,13 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
                 omitted_distances.append(polar_position[1])
                 omitted_per_output += 1
 
+    speed_text = f"Your speed is {round_floats(velocity)} m/s."
+    heading_text = f"Your heading is {round_floats(heading)} degrees."
+
     return {
         "output_json": {
             "instruction": "Given the surrounding object descriptions, predict the ego vehicle's movement instructions.",
-            "input": {
-                "speed": round_floats(velocity),
-                "heading": round_floats(heading),
-                "current_objects": current_objects
-            },
+            "input": f"{speed_text} {heading_text} " + ' '.join(current_objects),
             "output": movement_instructions
         },
         "current_objects": current_objects,
