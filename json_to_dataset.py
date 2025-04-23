@@ -1,4 +1,6 @@
 from datasets import Dataset, load_dataset
+import numpy as np
+import json
 
 # Load the saved JSON file
 with open("unsloth_data.json", "r") as f:
@@ -19,17 +21,20 @@ alpaca_prompt = """Below is an instruction that describes a task, paired with an
 ### Response:
 {}"""
 
-EOS_TOKEN = "eos" #tokenizer.eos_token  # Ensure the model knows when to stop generating
-
+EOS_TOKEN = tokenizer.eos_token # Must add EOS_TOKEN
 def formatting_prompts_func(examples):
     instructions = examples["instruction"]
-    inputs = examples["input"]
-    outputs = examples["output"]
-    texts = [
-        alpaca_prompt.format(instruction, input_text, output) + EOS_TOKEN
-        for instruction, input_text, output in zip(instructions, inputs, outputs)
-    ]
-    return {"text": texts}
+    inputs       = examples["input"]
+    outputs      = examples["output"]
+    #print(instructions)
+    #print(inputs)
+    #print(outputs)
+    texts = []
+    for instruction, input, output in zip(instructions, inputs, outputs):
+        # Must add EOS_TOKEN, otherwise your generation will go on forever!
+        text = alpaca_prompt.format(instruction, input, output) + EOS_TOKEN
+        texts.append(text)
+    return { "text" : texts, }
 
 # Apply formatting function
 dataset = dataset.map(formatting_prompts_func, batched=True)
