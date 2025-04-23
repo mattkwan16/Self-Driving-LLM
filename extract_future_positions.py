@@ -10,7 +10,7 @@ import multiprocessing
 # nusc = NuScenes(version='v1.0-trainval', dataroot='/data/sets/nuscenes', verbose=True)
 
 MAX_DISTANCE = 50
-FUTURE_TIMES = [1, 3, 5]
+FUTURE_TIMES = [3, 6, 10]
 
 def round_floats(data, decimals=3):
     """Recursively round all floats in a data structure to a given number of decimal places."""
@@ -29,6 +29,13 @@ def cartesian_to_polar(relative_position):
     angle = np.degrees(np.arctan2(y, x))  # Compute angle in degrees
     return [round(angle, 3), round(distance, 3)]
 
+def direction_from_angle(angle):
+    angle = angle % 360
+    clock_pos = round(((angle + 15) % 360) / 30)
+    if clock_pos == 0:
+        clock_pos = 12
+    return f"{clock_pos} o'clock"
+
 def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None):
     """Retrieve ego and object positions relative to the ego vehicle at future timestamps."""
     count_omits = 0
@@ -43,11 +50,19 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
     ego_translation = np.array(ego_pose_data['translation'])
     ego_rotation = Quaternion(ego_pose_data['rotation'])
 
-    # Get current speed and heading
-    velocity = np.linalg.norm(ego_translation)  # Approximate speed
-    heading = np.degrees(ego_rotation.yaw_pitch_roll[0])  # Extract yaw as heading in degrees
+   # Get previous sample for velocity calculation
+    prev_sample = sample
+    while prev_sample['prev']:
+        prev_sample = nusc.get('sample', prev_sample['prev'])
+        break  # Break after getting the immediate previous sample
 
-    # Get current object positions
+    prev_ego_pose_data = nusc.get('ego_pose', nusc.get('sample_data', prev_sample['data']['LIDAR_TOP'])['ego_pose_token'])
+    prev_translation = np.array(prev_ego_pose_data['translation'])
+    time_diff = current_time - (prev_sample['timestamp'] / 1e6)
+    velocity = np.linalg.norm(ego_translation - prev_translation) / time_diff if time_diff > 0 else 0  # Handle case where time_diff is 0
+
+    heading = np.degrees(ego_rotation.yaw_pitch_roll[0])
+
     current_objects = []
     number_of_objects += len(sample['anns'])
     for ann_token in sample['anns']:
@@ -55,35 +70,34 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
         obj_translation = np.array(ann['translation'])
         relative_position = ego_rotation.inverse.rotate(obj_translation - ego_translation)
         polar_position = cartesian_to_polar(relative_position)
-        
+
         if max_distance is None or polar_position[1] <= max_distance:
-            current_objects.append({
-                'category': ann['category_name'], 
-                'position': polar_position
-            })
+            current_objects.append(f"There is a {ann['category_name']} {round(polar_position[1])}m away at your {direction_from_angle(polar_position[0])}.")
         else:
             count_omits += 1
             omitted_distances.append(polar_position[1])
             omitted_per_output += 1
 
     future_ego_positions, future_objects = {}, {}
+    movement_instructions = []
     future_sample = sample
     for future_time in future_times:
         future_time_target = current_time + future_time
 
-        # Move forward in time until we find the closest future sample
         while future_sample['next']:
             future_sample = nusc.get('sample', future_sample['next'])
             if future_sample['timestamp'] / 1e6 >= future_time_target:
                 break
 
-        # Get future ego pose
         ego_pose_data = nusc.get('ego_pose', nusc.get('sample_data', future_sample['data']['LIDAR_TOP'])['ego_pose_token'])
         future_translation = np.array(ego_pose_data['translation'])
         relative_future_translation = ego_rotation.inverse.rotate(future_translation - ego_translation)
-        future_ego_positions[future_time] = cartesian_to_polar(relative_future_translation)
+        polar_future = cartesian_to_polar(relative_future_translation)
+        future_ego_positions[future_time] = polar_future
 
-        # Get future object positions
+        direction = direction_from_angle(polar_future[0])
+        movement_instructions.append(f"In {future_time} second(s), arrive {round(polar_future[1], 1)}m to your {direction}. ")
+
         future_objects[future_time] = []
         number_of_objects += len(future_sample['anns'])
         for ann_token in future_sample['anns']:
@@ -91,18 +105,27 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
             obj_translation = np.array(ann['translation'])
             relative_position = ego_rotation.inverse.rotate(obj_translation - future_translation)
             polar_position = cartesian_to_polar(relative_position)
-            
+
             if max_distance is None or polar_position[1] <= max_distance:
                 future_objects[future_time].append({
-                    'category': ann['category_name'], 
+                    'category': ann['category_name'],
                     'position': polar_position
                 })
             else:
                 count_omits += 1
                 omitted_distances.append(polar_position[1])
                 omitted_per_output += 1
-    
+
+    speed_text = f"Your speed is {round_floats(velocity)} m/s."
+    heading_text = "" #f"Your heading is {round_floats(heading)} degrees."
+    movement_text = "".join(movement_instructions)
+
     return {
+        "output_json": {
+            "instruction": "Given the surrounding object descriptions, predict the ego vehicle's movement instructions.",
+            "input": f"{speed_text} {heading_text} " + ' '.join(current_objects),
+            "output": movement_text
+        },
         "current_objects": current_objects,
         "future_ego_positions": future_ego_positions,
         "future_objects": future_objects,
@@ -112,13 +135,11 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
     }
 
 def process_sample(sample_token):
-    """Processes a single sample and returns the result."""
     return get_local_positions(sample_token, max_distance=MAX_DISTANCE, future_times=FUTURE_TIMES)
 
 def process_and_save(sample_tokens):
-    """Processes samples in parallel and writes output to file."""
     num_workers = 16
-    
+
     results = []
     omitted_distances_total = []
     omitted_per_output_total = 0
@@ -127,7 +148,7 @@ def process_and_save(sample_tokens):
 
     with multiprocessing.Pool(num_workers) as pool:
         for result in tqdm(pool.imap(process_sample, sample_tokens), total=len(sample_tokens), desc="Processing Samples"):
-            results.append(result)
+            results.append(result['output_json'])
             omitted_distances_total.extend(result['omitted_distances'])
             omitted_per_output_total += result['omitted_per_output']
             count_omits_total += len(result['omitted_distances'])
