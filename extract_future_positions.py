@@ -58,7 +58,7 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
 
     prev_ego_pose_data = nusc.get('ego_pose', nusc.get('sample_data', prev_sample['data']['LIDAR_TOP'])['ego_pose_token'])
     prev_translation = np.array(prev_ego_pose_data['translation'])
-    time_diff = current_time - (prev_sample['timestamp'] / 1e6) 
+    time_diff = current_time - (prev_sample['timestamp'] / 1e6)
     velocity = np.linalg.norm(ego_translation - prev_translation) / time_diff if time_diff > 0 else 0  # Handle case where time_diff is 0
 
     heading = np.degrees(ego_rotation.yaw_pitch_roll[0])
@@ -72,7 +72,7 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
         polar_position = cartesian_to_polar(relative_position)
 
         if max_distance is None or polar_position[1] <= max_distance:
-            current_objects.append(f"There is a {ann['category_name']} {round(polar_position[1])}m away at your {direction_from_angle(polar_position[0])}.")
+            current_objects.append(f"There is a {ann['category_name']} {round_floats(polar_position[1])}m away at your {direction_from_angle(polar_position[0])}.")
         else:
             count_omits += 1
             omitted_distances.append(polar_position[1])
@@ -96,7 +96,7 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
         future_ego_positions[future_time] = polar_future
 
         direction = direction_from_angle(polar_future[0])
-        movement_instructions.append(f"In {future_time} second(s), arrive {round(polar_future[1], 1)}m to your {direction}.")
+        movement_instructions.append(f"In {future_time} second(s), arrive {round(polar_future[1], 1)}m to your {direction}. ")
 
         future_objects[future_time] = []
         number_of_objects += len(future_sample['anns'])
@@ -117,13 +117,14 @@ def get_local_positions(sample_token, future_times=[1, 3, 5], max_distance=None)
                 omitted_per_output += 1
 
     speed_text = f"Your speed is {round_floats(velocity)} m/s."
-    heading_text = f"Your heading is {round_floats(heading)} degrees."
+    heading_text = "" #f"Your heading is {round_floats(heading)} degrees."
+    movement_text = "".join(movement_instructions)
 
     return {
         "output_json": {
             "instruction": "Given the surrounding object descriptions, predict the ego vehicle's movement instructions.",
             "input": f"{speed_text} {heading_text} " + ' '.join(current_objects),
-            "output": movement_instructions
+            "output": movement_text
         },
         "current_objects": current_objects,
         "future_ego_positions": future_ego_positions,
